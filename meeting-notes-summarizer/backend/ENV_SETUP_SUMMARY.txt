@@ -1,0 +1,164 @@
+================================================================================
+ENVIRONMENT SETUP - QUICK REFERENCE
+================================================================================
+
+OPTION 1: INTERACTIVE SCRIPT (RECOMMENDED) ⭐
+================================================================================
+
+Run this command in backend/ directory:
+
+    python create_env.py
+
+The script will:
+  1. Ask for Azure OpenAI API Key
+  2. Ask for Azure OpenAI Endpoint
+  3. Ask for Azure OpenAI Deployment Name
+  4. Ask for PostgreSQL credentials
+  5. Ask for application settings
+  6. Create .env file automatically
+
+Time: 2 minutes
+
+
+OPTION 2: MANUAL SETUP
+================================================================================
+
+1. Create file: backend/.env
+
+2. Copy this content:
+
+    # Azure OpenAI Configuration
+    AZURE_OPENAI_API_KEY=your-api-key-here
+    AZURE_OPENAI_ENDPOINT=https://your-resource.openai.azure.com/
+    AZURE_OPENAI_DEPLOYMENT_NAME=gpt-4
+    AZURE_OPENAI_API_VERSION=2024-08-01-preview
+
+    # PostgreSQL Configuration
+    DATABASE_URL=postgresql://postgres:password@localhost:5432/meeting_notes_summarizer
+
+    # Application Settings
+    ENVIRONMENT=development
+    DEBUG=true
+    SECRET_KEY=dev-secret-key-change-in-production
+
+    # Frontend URL (for CORS)
+    FRONTEND_URL=http://localhost:5173
+
+3. Replace placeholders with your actual values
+
+4. Save file
+
+Time: 5 minutes
+
+
+WHERE TO GET CREDENTIALS
+================================================================================
+
+AZURE OPENAI:
+  1. Go to: https://portal.azure.com/
+  2. Find your Azure OpenAI resource
+  3. Click "Keys and Endpoint"
+  4. Copy "Key 1" or "Key 2" → AZURE_OPENAI_API_KEY
+  5. Copy "Endpoint" → AZURE_OPENAI_ENDPOINT (must end with /)
+  6. Go to "Model deployments"
+  7. Find GPT-4 deployment
+  8. Copy deployment name → AZURE_OPENAI_DEPLOYMENT_NAME
+
+POSTGRESQL:
+  Default values (if running locally):
+    - Username: postgres
+    - Password: (your postgres password)
+    - Host: localhost
+    - Port: 5432
+    - Database: meeting_notes_summarizer
+
+  Example DATABASE_URL:
+    postgresql://postgres:mypassword@localhost:5432/meeting_notes_summarizer
+
+
+VERIFY SETUP
+================================================================================
+
+After creating .env, verify:
+
+  1. Check file exists:
+     ls -la backend/.env
+
+  2. Check config loads:
+     cd backend
+     python -c "from app.config import settings; print('✅ Config OK')"
+
+  3. Check database connection:
+     python -c "from app.database import engine; print('✅ DB OK')"
+
+
+TROUBLESHOOTING
+================================================================================
+
+ERROR: "No such file or directory: '.env'"
+  → Run: python create_env.py
+  → Or create backend/.env manually
+
+ERROR: "could not connect to server"
+  → Check PostgreSQL is running: psql -U postgres -c "SELECT 1;"
+  → Create database: createdb meeting_notes_summarizer
+  → Check DATABASE_URL in .env
+
+ERROR: "Invalid API key"
+  → Verify API key from Azure Portal
+  → Check endpoint has trailing /
+  → Verify GPT-4 deployment exists
+
+
+NEXT STEPS
+================================================================================
+
+After .env is created:
+
+  1. Initialize database:
+     python setup_db.py
+
+  2. Start backend:
+     python -m uvicorn app.main:app --reload
+
+  3. Start frontend (new terminal):
+     cd ../frontend
+     npm run dev
+
+  4. Open application:
+     Frontend: http://localhost:5173
+     API Docs: http://localhost:8000/docs
+
+
+SECURITY NOTES
+================================================================================
+
+⚠️  IMPORTANT:
+  - .env is in .gitignore (not committed to Git)
+  - Never share .env file
+  - Never commit .env to version control
+  - Keep API keys confidential
+
+
+FILES
+================================================================================
+
+  create_env.py           - Interactive script to create .env
+  ENV_SETUP_GUIDE.md      - Detailed setup guide
+  QUICK_ENV_SETUP.md      - Quick reference
+  ENV_SETUP_SUMMARY.txt   - This file
+  .env.example            - Template (reference only)
+
+
+HELP
+================================================================================
+
+For detailed help, see:
+  - ENV_SETUP_GUIDE.md (detailed instructions)
+  - QUICK_ENV_SETUP.md (quick reference)
+  - ../SETUP_INSTRUCTIONS.md (complete setup guide)
+  - ../RUN_INSTRUCTIONS.md (run instructions)
+
+================================================================================
+
+
