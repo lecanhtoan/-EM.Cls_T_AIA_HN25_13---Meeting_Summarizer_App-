@@ -1,0 +1,12 @@
+Minh (PM): Cảm ơn mọi người đã có mặt. Hôm nay chúng ta họp để chốt yêu cầu và phân công task cho module User Permission Management trong sprint này. Deadline dự kiến 10 ngày.
+Dương (Backend): Backend cần thêm bảng role, permission, role-permission và user-role. API CRUD sẽ làm theo REST.
+Huy (Frontend): UI cần 3 màn hình: Role list, Permission assignment, User-role mapping. Em có thể làm trong tuần này.
+Lan (QA): QA cần test matrix cho role-permission, đặc biệt các trường hợp thiếu quyền.
+Khôi (DevOps): Em sẽ cập nhật pipeline CI/CD và thêm rule kiểm tra migrations.
+Minh (PM): Phân công: Dương làm DB + API (deadline 04/12), Huy làm UI (06/12), Lan test (09/12), Khôi update CI/CD (05/12).
+Minh (PM): Quyết định 1: Dùng REST thay vì GraphQL.
+Minh (PM): Quyết định 2: Log audit lưu vào bảng riêng.
+Minh (PM): Quyết định 3: UI không cần phân trang phiên bản đầu.
+Dương (Backend): Em sẽ làm migration trước để DevOps add pipeline.
+Huy (Frontend): Em sẽ làm UI skeleton trước.
+Minh (PM): Kết thúc cuộc họp, mọi người bắt đầu vào task luôn nhé.
