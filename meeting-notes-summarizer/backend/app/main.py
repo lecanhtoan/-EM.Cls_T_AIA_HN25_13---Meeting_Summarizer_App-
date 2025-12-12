@@ -8,7 +8,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.config import settings
 from app.database import engine
 from app.models import Base
-from app.routes import meetings
+from app.routes import meetings, chatbot
 
 # Create all database tables
 Base.metadata.create_all(bind=engine)
@@ -31,6 +31,7 @@ app.add_middleware(
 
 # Include routes
 app.include_router(meetings.router)
+app.include_router(chatbot.router)
 
 
 @app.get("/")
@@ -57,5 +58,3 @@ if __name__ == "__main__":
         port=8000,
         reload=settings.debug
     )
-
-
