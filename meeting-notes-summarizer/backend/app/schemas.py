@@ -34,6 +34,19 @@ class UpdateActionItemsRequest(BaseModel):
     items: List[ActionItemUpdate]
 
 
+class ChatbotAskRequest(BaseModel):
+    """Request schema for chatbot semantic search + answer generation."""
+    question: str
+    top_k: int = 5
+    meeting_ids: Optional[List[int]] = None  # Optional filter
+
+
+class ChatbotIndexRequest(BaseModel):
+    """Request schema for indexing summaries to Pinecone."""
+    meeting_id: Optional[int] = None  # If omitted, index all meetings
+    limit: Optional[int] = None       # Optional safety limit when indexing all
+
+
 # ============================================================================
 # Response Schemas
 # ============================================================================
@@ -43,7 +56,7 @@ class SummaryResponse(BaseModel):
     bullets: List[str]
     style: str
     max_bullets: int
-    
+
     class Config:
         from_attributes = True
 
@@ -56,7 +69,7 @@ class ActionItemResponse(BaseModel):
     deadline: Optional[datetime] = None
     priority: str = "medium"
     status: str = "open"
-    
+
     class Config:
         from_attributes = True
 
@@ -67,7 +80,7 @@ class DecisionResponse(BaseModel):
     decision: str
     owner: Optional[str] = None
     decision_date: datetime
-    
+
     class Config:
         from_attributes = True
 
@@ -81,7 +94,7 @@ class MeetingResultResponse(BaseModel):
     summary: Optional[SummaryResponse] = None
     action_items: List[ActionItemResponse] = []
     decisions: List[DecisionResponse] = []
-    
+
     class Config:
         from_attributes = True
 
@@ -96,7 +109,7 @@ class MeetingDetailResponse(BaseModel):
     summary: Optional[SummaryResponse] = None
     action_items: List[ActionItemResponse] = []
     decisions: List[DecisionResponse] = []
-    
+
     class Config:
         from_attributes = True
 
@@ -113,3 +126,23 @@ class MeetingListItem(BaseModel):
 class MeetingListResponse(BaseModel):
     """Meetings list response."""
     meetings: List[MeetingListItem]
+
+
+class ChatbotSource(BaseModel):
+    """A single retrieved source from semantic search."""
+    meeting_id: int
+    summary_id: int
+    title: str
+    score: float
+    snippet: str
+
+
+class ChatbotAskResponse(BaseModel):
+    """Chatbot response with answer and retrieved sources."""
+    answer: str
+    sources: List[ChatbotSource] = []
+
+
+class ChatbotIndexResponse(BaseModel):
+    """Indexing result."""
+    indexed: int

@@ -20,6 +20,14 @@ AZURE_OPENAI_ENDPOINT=https://your-resource-name.openai.azure.com/
 AZURE_OPENAI_DEPLOYMENT_NAME=gpt-4
 AZURE_OPENAI_API_VERSION=2024-08-01-preview
 
+# PineCone configuration + embedding model
+PINECONE_API_KEY=<YOUR_PINECONE_API_KEY>
+PINECONE_INDEX_NAME=meeting-summaries
+PINECONE_NAMESPACE=default
+PINECONE_CLOUD=aws
+PINECONE_REGION=us-east-1
+AZURE_OPENAI_EMBEDDING_DEPLOYMENT_NAME=text-embedding-3-large
+
 # PostgreSQL Configuration
 # Format: postgresql://username:password@host:port/database
 # Example: postgresql://postgres:password@localhost:5432/meeting_notes_summarizer

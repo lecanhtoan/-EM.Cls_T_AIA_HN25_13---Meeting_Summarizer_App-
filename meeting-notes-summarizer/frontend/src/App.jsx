@@ -5,6 +5,7 @@ import ActionItemsView from './components/ActionItemsView'
 import DecisionsView from './components/DecisionsView'
 import LoadingSpinner from './components/LoadingSpinner'
 import MeetingsList from './components/MeetingsList'
+import ChatbotWidget from './components/ChatbotWidget'
 
 function App() {
   const [results, setResults] = useState(null)
@@ -33,6 +34,9 @@ function App() {
   const handleBackToList = () => {
     setResults(null)
   }
+
+  const currentMeetingId = results?.meeting_id || results?.id || null
+  const currentMeetingTitle = results?.title || null
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-blue-50 to-indigo-100">
@@ -117,6 +121,9 @@ function App() {
           </div>
         </div>
       </div>
+
+      {/* Floating chatbot bubble */}
+      <ChatbotWidget meetingId={currentMeetingId} meetingTitle={currentMeetingTitle} />
     </div>
   )
 }

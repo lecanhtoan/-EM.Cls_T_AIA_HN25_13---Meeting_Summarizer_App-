@@ -1,6 +1,9 @@
 """
 Summarization service that orchestrates the complete pipeline.
-Handles transcript processing, function calling, and database persistence.
+Handles transcript processing,
+    -> function calling,
+        -> database persistence
+            -> and automatically Pinecone indexing after a meeting is summarized.
 """
 
 from datetime import datetime
@@ -11,19 +14,24 @@ from app.azure_client import azure_client
 from app.utils.preprocess import segment_by_speaker, extract_participants, normalize_transcript_text
 from app.utils.validation import enforce_action_item_rules, enforce_decision_rules, build_quality_report, too_verbatim
 
+import logging
+from app.services.embeddings import EmbeddingsService
+
+logger = logging.getLogger(__name__)
+
 
 class SummarizationService:
     """Service for processing transcripts and persisting results to database."""
 
     @staticmethod
     def process_transcript(
-        db: Session,
-        transcript_text: str,
-        title: str,
-        language: str = "en",
-        file_name: Optional[str] = None,
-        file_type: Optional[str] = None,
-        user_id: int = 1  # Default user for MVP
+            db: Session,
+            transcript_text: str,
+            title: str,
+            language: str = "en",
+            file_name: Optional[str] = None,
+            file_type: Optional[str] = None,
+            user_id: int = 1  # Default user for MVP
     ) -> Dict[str, Any]:
         """
         Process a transcript through the complete pipeline:
@@ -103,7 +111,7 @@ class SummarizationService:
                 max_bullets=summary_payload.get("max_bullets", 6),
                 bullets_json=summary_payload.get("bullets", []),
                 model_name=ai_results.get("tool_runs", [
-                                          {}])[-1].get("model_name", "gpt-4") if ai_results.get("tool_runs") else "gpt-4"
+                    {}])[-1].get("model_name", "gpt-4") if ai_results.get("tool_runs") else "gpt-4"
             )
             db.add(summary)
 
@@ -178,6 +186,12 @@ class SummarizationService:
         # Commit all changes
         db.commit()
         db.refresh(meeting)
+
+        # Auto-index meeting summaries into Pinecone (best-effort; do not fail the API on indexing errors)
+        try:
+            EmbeddingsService.index_meeting_summaries(db, meeting_id=meeting.id)
+        except Exception:
+            logger.exception("Auto-indexing to Pinecone failed for meeting_id=%s", meeting.id)
 
         # Prepare response
         response = {
