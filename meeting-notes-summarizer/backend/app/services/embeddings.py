@@ -1,7 +1,7 @@
 """
 Embeddings + semantic search service using Pinecone.
 
-This service focuses on embedding *summarized output* (Summary.bullets_json)
+This service focuses on embedding structured meeting artifacts (summaries, action items, decisions)
 and enabling semantic retrieval + answering via an LLM.
 All comments in code must be written in English.
 """
@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import logging
 import time
+from datetime import datetime
 from typing import Any, Dict, List, Optional, Tuple, cast
 
 from sqlalchemy.orm import Session
@@ -18,13 +19,17 @@ from openai import AzureOpenAI, AuthenticationError
 from openai.types.chat import ChatCompletionMessageParam
 
 from app.config import settings
-from app.models import Meeting, Summary
+from app.models import ActionItem, Decision, Meeting, Summary
 
 logger = logging.getLogger(__name__)
 
 
 class EmbeddingsService:
-    """Service for indexing summaries into Pinecone and answering questions using semantic search."""
+    """Service for indexing meeting artifacts into Pinecone and answering questions using semantic search."""
+
+    # -----------------------------
+    # Azure OpenAI clients
+    # -----------------------------
 
     @staticmethod
     def _get_embeddings_client() -> AzureOpenAI:
@@ -44,6 +49,10 @@ class EmbeddingsService:
             azure_endpoint=settings.azure_openai_endpoint,
         )
 
+    # -----------------------------
+    # Embeddings
+    # -----------------------------
+
     @staticmethod
     def _embed_text(text: str) -> List[float]:
         """Create an embedding vector for the given text using Azure OpenAI embeddings."""
@@ -59,7 +68,6 @@ class EmbeddingsService:
             )
             return resp.data[0].embedding
         except AuthenticationError:
-            # If embeddings are not available, return empty vector so indexing/querying can gracefully skip.
             logger.exception(
                 "Embedding request failed (auth/model access). "
                 "Check Azure embeddings deployment + AZURE_OPENAI_EMBEDDING_* settings."
@@ -81,6 +89,10 @@ class EmbeddingsService:
             )
         return len(vec)
 
+    # -----------------------------
+    # Text formatting (what gets embedded)
+    # -----------------------------
+
     @staticmethod
     def _format_summary_text(summary: Summary) -> str:
         """Convert stored bullets into a single text chunk suitable for embedding."""
@@ -90,6 +102,60 @@ class EmbeddingsService:
         else:
             bullet_text = ""
         return bullet_text.strip()
+
+    @staticmethod
+    def _format_action_item_text(item: ActionItem) -> str:
+        """Convert an ActionItem into a text chunk suitable for embedding."""
+        parts: List[str] = []
+        parts.append("Type: ActionItem")
+        parts.append(f"Task: {str(item.task or '').strip()}")
+
+        if item.assignee:
+            parts.append(f"Assignee: {str(item.assignee).strip()}")
+
+        if item.deadline:
+            # Use ISO format for consistent retrieval.
+            if isinstance(item.deadline, datetime):
+                parts.append(f"Deadline: {item.deadline.date().isoformat()}")
+            else:
+                parts.append(f"Deadline: {str(item.deadline)}")
+
+        if item.priority:
+            parts.append(f"Priority: {str(item.priority).strip()}")
+
+        if item.status:
+            parts.append(f"Status: {str(item.status).strip()}")
+
+        if item.source_quote:
+            sq = str(item.source_quote).strip()
+            if sq:
+                parts.append(f"Source quote: {sq}")
+
+        return "\n".join(parts).strip()
+
+    @staticmethod
+    def _format_decision_text(decision: Decision) -> str:
+        """Convert a Decision into a text chunk suitable for embedding."""
+        parts: List[str] = []
+        parts.append("Type: Decision")
+        parts.append(f"Decision: {str(decision.decision or '').strip()}")
+
+        # Owner/source_quote exist on your model; indexing them improves retrieval even if you only asked for `decision`.
+        if getattr(decision, "owner", None):
+            owner = str(getattr(decision, "owner") or "").strip()
+            if owner:
+                parts.append(f"Owner: {owner}")
+
+        if getattr(decision, "source_quote", None):
+            sq = str(getattr(decision, "source_quote") or "").strip()
+            if sq:
+                parts.append(f"Source quote: {sq}")
+
+        return "\n".join(parts).strip()
+
+    # -----------------------------
+    # Pinecone
+    # -----------------------------
 
     @staticmethod
     def _pinecone_client():
@@ -110,7 +176,7 @@ class EmbeddingsService:
     @staticmethod
     def _ensure_pinecone_index_exists() -> None:
         """
-        Ensure pinecone index exists. If missing, create it.
+        Ensure Pinecone index exists. If missing, create it.
 
         This makes POST /api/chatbot/index succeed on fresh environments without requiring manual index creation.
         """
@@ -142,7 +208,6 @@ class EmbeddingsService:
         )
 
         # Wait briefly for the index to become ready.
-        # Pinecone can take a moment after create_index before operations succeed.
         for _ in range(30):
             existing = pc.list_indexes()
             names = set(getattr(existing, "names", lambda: [])())
@@ -159,13 +224,31 @@ class EmbeddingsService:
         pc = EmbeddingsService._pinecone_client()
         return pc.Index(settings.pinecone_index_name)
 
+    # -----------------------------
+    # Upserts (one record at a time)
+    # -----------------------------
+
+    @staticmethod
+    def _upsert_vector(
+        *,
+        vector_id: str,
+        vector: List[float],
+        metadata: Dict[str, Any],
+    ) -> None:
+        """Internal helper to upsert a single vector into Pinecone."""
+        index = EmbeddingsService._pinecone_index()
+        index.upsert(
+            vectors=[{"id": vector_id, "values": vector, "metadata": metadata}],
+            namespace=settings.pinecone_namespace,
+        )
+
     @staticmethod
     def upsert_summary(db: Session, summary_id: int) -> int:
         """
         Upsert a single Summary into Pinecone.
 
         Returns:
-            1 if upserted, 0 if skipped (e.g., missing summary or empty text)
+            1 if upserted, 0 if skipped
         """
         summary: Optional[Summary] = db.query(Summary).filter(Summary.id == summary_id).first()
         if not summary:
@@ -181,56 +264,159 @@ class EmbeddingsService:
 
         vector = EmbeddingsService._embed_text(text)
         if not vector:
-            # If embeddings are unavailable, skip indexing instead of crashing the whole job.
             return 0
 
         vector_id = f"meeting-{meeting.id}-summary-{summary.id}"
         metadata = {
+            "source_type": "summary",
+            "source_id": summary.id,
             "meeting_id": meeting.id,
-            "summary_id": summary.id,
             "title": meeting.title,
             "language": meeting.language,
             "text": text,
         }
-
-        index = EmbeddingsService._pinecone_index()
-        index.upsert(
-            vectors=[{"id": vector_id, "values": vector, "metadata": metadata}],
-            namespace=settings.pinecone_namespace,
-        )
+        EmbeddingsService._upsert_vector(vector_id=vector_id, vector=vector, metadata=metadata)
         return 1
+
+    @staticmethod
+    def upsert_action_item(db: Session, action_item_id: int) -> int:
+        """
+        Upsert a single ActionItem into Pinecone.
+
+        Returns:
+            1 if upserted, 0 if skipped
+        """
+        item: Optional[ActionItem] = db.query(ActionItem).filter(ActionItem.id == action_item_id).first()
+        if not item:
+            return 0
+
+        meeting: Optional[Meeting] = db.query(Meeting).filter(Meeting.id == item.meeting_id).first()
+        if not meeting:
+            return 0
+
+        text = EmbeddingsService._format_action_item_text(item)
+        if not text:
+            return 0
+
+        vector = EmbeddingsService._embed_text(text)
+        if not vector:
+            return 0
+
+        vector_id = f"meeting-{meeting.id}-action-item-{item.id}"
+        metadata = {
+            "source_type": "action_item",
+            "source_id": item.id,
+            "meeting_id": meeting.id,
+            "title": meeting.title,
+            "language": meeting.language,
+            "text": text,
+        }
+        EmbeddingsService._upsert_vector(vector_id=vector_id, vector=vector, metadata=metadata)
+        return 1
+
+    @staticmethod
+    def upsert_decision(db: Session, decision_id: int) -> int:
+        """
+        Upsert a single Decision into Pinecone.
+
+        Returns:
+            1 if upserted, 0 if skipped
+        """
+        dec: Optional[Decision] = db.query(Decision).filter(Decision.id == decision_id).first()
+        if not dec:
+            return 0
+
+        meeting: Optional[Meeting] = db.query(Meeting).filter(Meeting.id == dec.meeting_id).first()
+        if not meeting:
+            return 0
+
+        text = EmbeddingsService._format_decision_text(dec)
+        if not text:
+            return 0
+
+        vector = EmbeddingsService._embed_text(text)
+        if not vector:
+            return 0
+
+        vector_id = f"meeting-{meeting.id}-decision-{dec.id}"
+        metadata = {
+            "source_type": "decision",
+            "source_id": dec.id,
+            "meeting_id": meeting.id,
+            "title": meeting.title,
+            "language": meeting.language,
+            "text": text,
+        }
+        EmbeddingsService._upsert_vector(vector_id=vector_id, vector=vector, metadata=metadata)
+        return 1
+
+    # -----------------------------
+    # Indexing entry points (called by chatbot.py)
+    # -----------------------------
 
     @staticmethod
     def index_meeting_summaries(db: Session, meeting_id: int) -> int:
         """
-        Index all summaries for a specific meeting into Pinecone.
+        Index all meeting artifacts (Summary + ActionItem + Decision) for a specific meeting.
 
-        Used by POST /api/chatbot/index when meeting_id is provided.
-        Returns the number of summaries successfully upserted.
+        NOTE: Method name is kept for compatibility with chatbot.py, but indexing now includes more than summaries.
+        Returns the total number of vectors successfully upserted.
         """
-        summaries: List[Summary] = db.query(Summary).filter(Summary.meeting_id == meeting_id).all()
         count = 0
+
+        summaries: List[Summary] = db.query(Summary).filter(Summary.meeting_id == meeting_id).all()
         for s in summaries:
             count += EmbeddingsService.upsert_summary(db, s.id)
+
+        action_items: List[ActionItem] = db.query(ActionItem).filter(ActionItem.meeting_id == meeting_id).all()
+        for ai in action_items:
+            count += EmbeddingsService.upsert_action_item(db, ai.id)
+
+        decisions: List[Decision] = db.query(Decision).filter(Decision.meeting_id == meeting_id).all()
+        for d in decisions:
+            count += EmbeddingsService.upsert_decision(db, d.id)
+
         return count
 
     @staticmethod
     def index_all_summaries(db: Session, limit: Optional[int] = None) -> int:
         """
-        Index summaries for all meetings into Pinecone (optionally limited).
+        Index meeting artifacts (Summary + ActionItem + Decision) for all meetings (optionally limited).
 
-        Used by POST /api/chatbot/index when meeting_id is NOT provided.
-        Returns the number of summaries successfully upserted.
+        NOTE: Method name is kept for compatibility with chatbot.py, but indexing now includes more than summaries.
+        Returns the total number of vectors successfully upserted.
         """
-        q = db.query(Summary).order_by(Summary.id.asc())
-        if limit is not None:
-            q = q.limit(limit)
-        summaries: List[Summary] = q.all()
-
         count = 0
+
+        # Summaries
+        q_s = db.query(Summary).order_by(Summary.id.asc())
+        if limit is not None:
+            q_s = q_s.limit(limit)
+        summaries: List[Summary] = q_s.all()
         for s in summaries:
             count += EmbeddingsService.upsert_summary(db, s.id)
+
+        # Action items (use the same limit as a safety cap if provided)
+        q_a = db.query(ActionItem).order_by(ActionItem.id.asc())
+        if limit is not None:
+            q_a = q_a.limit(limit)
+        action_items: List[ActionItem] = q_a.all()
+        for ai in action_items:
+            count += EmbeddingsService.upsert_action_item(db, ai.id)
+
+        # Decisions
+        q_d = db.query(Decision).order_by(Decision.id.asc())
+        if limit is not None:
+            q_d = q_d.limit(limit)
+        decisions: List[Decision] = q_d.all()
+        for d in decisions:
+            count += EmbeddingsService.upsert_decision(db, d.id)
+
         return count
+
+    # -----------------------------
+    # Query + Answer
+    # -----------------------------
 
     @staticmethod
     def _query_pinecone(
@@ -282,7 +468,7 @@ class EmbeddingsService:
         meeting_ids: Optional[List[int]] = None,
     ) -> Tuple[str, List[Dict[str, Any]]]:
         """
-        Semantic search summaries in Pinecone and generate an answer grounded on retrieved snippets.
+        Semantic search meeting artifacts in Pinecone and generate an answer grounded on retrieved snippets.
 
         Returns:
             answer_text, sources
@@ -299,7 +485,7 @@ class EmbeddingsService:
         for m in matches:
             md = m.get("metadata") or {}
             meeting_id = int(md.get("meeting_id") or 0)
-            summary_id = int(md.get("summary_id") or 0)
+            source_id = int(md.get("source_id") or 0)  # stored from any table
             title = str(md.get("title") or "")
             text = str(md.get("text") or "")
             score = float(m.get("score") or 0.0)
@@ -308,7 +494,7 @@ class EmbeddingsService:
             sources.append(
                 {
                     "meeting_id": meeting_id,
-                    "summary_id": summary_id,
+                    "summary_id": source_id,  # schema compatibility (represents the underlying source record id)
                     "title": title,
                     "score": score,
                     "snippet": snippet,
@@ -316,23 +502,23 @@ class EmbeddingsService:
             )
 
             if snippet:
-                context_blocks.append(f"[{meeting_id}/{summary_id}] {title}\n{snippet}")
+                context_blocks.append(f"[{meeting_id}/{source_id}] {title}\n{snippet}")
 
         if not context_blocks:
             return (
-                "I couldn't find relevant meeting summaries yet (or semantic search isn't available). "
-                "Try indexing summaries first, and verify embeddings + Pinecone configuration.",
+                "I couldn't find relevant indexed meeting information yet. "
+                "Try indexing first, and make sure summaries/action items/decisions exist in the database.",
                 [],
             )
 
         system = (
-            "You are a helpful assistant. Answer the user's question using ONLY the provided meeting summary snippets. "
+            "You are a helpful assistant. Answer the user's question using ONLY the provided meeting snippets. "
             "If the answer is not present in the snippets, say you don't know. Keep the answer concise and practical."
         )
         user = (
             "Question:\n"
             f"{question}\n\n"
-            "Meeting summary snippets:\n"
+            "Meeting snippets:\n"
             + "\n\n---\n\n".join(context_blocks)
         )
 
@@ -351,6 +537,6 @@ class EmbeddingsService:
 
         answer = (resp.choices[0].message.content or "").strip()
         if not answer:
-            answer = "I couldn't generate an answer from the available summaries."
+            answer = "I couldn't generate an answer from the available snippets."
 
         return answer, sources
