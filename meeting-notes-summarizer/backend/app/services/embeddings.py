@@ -9,11 +9,13 @@ All comments in code must be written in English.
 from __future__ import annotations
 
 import logging
-from typing import Any, Dict, List, Optional, Tuple
+import time
+from typing import Any, Dict, List, Optional, Tuple, cast
 
 from sqlalchemy.orm import Session
 
 from openai import AzureOpenAI, AuthenticationError
+from openai.types.chat import ChatCompletionMessageParam
 
 from app.config import settings
 from app.models import Meeting, Summary
@@ -56,13 +58,28 @@ class EmbeddingsService:
                 input=text,
             )
             return resp.data[0].embedding
-        except AuthenticationError as e:
-            logger.error(
+        except AuthenticationError:
+            # If embeddings are not available, return empty vector so indexing/querying can gracefully skip.
+            logger.exception(
                 "Embedding request failed (auth/model access). "
-                "Check Azure embeddings deployment + AZURE_OPENAI_EMBEDDING_* settings. Details: %s",
-                str(e),
+                "Check Azure embeddings deployment + AZURE_OPENAI_EMBEDDING_* settings."
             )
             return []
+
+    @staticmethod
+    def _embedding_dimension() -> int:
+        """
+        Determine embedding vector dimension from the configured embeddings deployment.
+
+        Pinecone index dimension must exactly match the embedding vector length.
+        """
+        vec = EmbeddingsService._embed_text("dimension_probe")
+        if not vec:
+            raise RuntimeError(
+                "Unable to create embeddings to determine vector dimension. "
+                "Check AZURE_OPENAI_EMBEDDING_* settings and model permissions."
+            )
+        return len(vec)
 
     @staticmethod
     def _format_summary_text(summary: Summary) -> str:
@@ -79,7 +96,7 @@ class EmbeddingsService:
         """
         Create a Pinecone client instance.
 
-        Supports the modern 'pinecone' client API if available via pinecone-client.
+        Uses pinecone-client v3 API.
         """
         try:
             from pinecone import Pinecone  # type: ignore
@@ -91,8 +108,54 @@ class EmbeddingsService:
         return Pinecone(api_key=settings.pinecone_api_key)
 
     @staticmethod
+    def _ensure_pinecone_index_exists() -> None:
+        """
+        Ensure pinecone index exists. If missing, create it.
+
+        This makes POST /api/chatbot/index succeed on fresh environments without requiring manual index creation.
+        """
+        pc = EmbeddingsService._pinecone_client()
+        index_name = settings.pinecone_index_name
+
+        existing = pc.list_indexes()
+        names = set(getattr(existing, "names", lambda: [])())
+        if index_name in names:
+            return
+
+        try:
+            from pinecone import ServerlessSpec  # type: ignore
+        except Exception as e:  # noqa
+            raise RuntimeError(
+                "Pinecone ServerlessSpec is unavailable. Ensure pinecone-client is installed and up to date."
+            ) from e
+
+        dimension = EmbeddingsService._embedding_dimension()
+
+        pc.create_index(
+            name=index_name,
+            dimension=dimension,
+            metric="cosine",
+            spec=ServerlessSpec(
+                cloud=settings.pinecone_cloud,
+                region=settings.pinecone_region,
+            ),
+        )
+
+        # Wait briefly for the index to become ready.
+        # Pinecone can take a moment after create_index before operations succeed.
+        for _ in range(30):
+            existing = pc.list_indexes()
+            names = set(getattr(existing, "names", lambda: [])())
+            if index_name in names:
+                return
+            time.sleep(1)
+
+        raise RuntimeError(f"Pinecone index '{index_name}' was requested to be created but is not visible yet.")
+
+    @staticmethod
     def _pinecone_index():
-        """Get Pinecone Index handle (assumes the index already exists)."""
+        """Get Pinecone Index handle; auto-creates index if missing."""
+        EmbeddingsService._ensure_pinecone_index_exists()
         pc = EmbeddingsService._pinecone_client()
         return pc.Index(settings.pinecone_index_name)
 
@@ -104,11 +167,11 @@ class EmbeddingsService:
         Returns:
             1 if upserted, 0 if skipped (e.g., missing summary or empty text)
         """
-        summary = db.query(Summary).filter(Summary.id == summary_id).first()
+        summary: Optional[Summary] = db.query(Summary).filter(Summary.id == summary_id).first()
         if not summary:
             return 0
 
-        meeting = db.query(Meeting).filter(Meeting.id == summary.meeting_id).first()
+        meeting: Optional[Meeting] = db.query(Meeting).filter(Meeting.id == summary.meeting_id).first()
         if not meeting:
             return 0
 
@@ -118,6 +181,7 @@ class EmbeddingsService:
 
         vector = EmbeddingsService._embed_text(text)
         if not vector:
+            # If embeddings are unavailable, skip indexing instead of crashing the whole job.
             return 0
 
         vector_id = f"meeting-{meeting.id}-summary-{summary.id}"
@@ -141,10 +205,10 @@ class EmbeddingsService:
         """
         Index all summaries for a specific meeting into Pinecone.
 
-        This is used by POST /api/chatbot/index when meeting_id is provided.
+        Used by POST /api/chatbot/index when meeting_id is provided.
         Returns the number of summaries successfully upserted.
         """
-        summaries = db.query(Summary).filter(Summary.meeting_id == meeting_id).all()
+        summaries: List[Summary] = db.query(Summary).filter(Summary.meeting_id == meeting_id).all()
         count = 0
         for s in summaries:
             count += EmbeddingsService.upsert_summary(db, s.id)
@@ -155,13 +219,13 @@ class EmbeddingsService:
         """
         Index summaries for all meetings into Pinecone (optionally limited).
 
-        This is used by POST /api/chatbot/index when meeting_id is NOT provided.
+        Used by POST /api/chatbot/index when meeting_id is NOT provided.
         Returns the number of summaries successfully upserted.
         """
         q = db.query(Summary).order_by(Summary.id.asc())
         if limit is not None:
             q = q.limit(limit)
-        summaries = q.all()
+        summaries: List[Summary] = q.all()
 
         count = 0
         for s in summaries:
@@ -199,7 +263,6 @@ class EmbeddingsService:
         res = index.query(**query_kwargs)
         matches = getattr(res, "matches", None) or []
 
-        # Normalize to plain dicts for easier downstream usage.
         out: List[Dict[str, Any]] = []
         for m in matches:
             out.append(
@@ -274,15 +337,16 @@ class EmbeddingsService:
         )
 
         client = EmbeddingsService._get_chat_client()
+        messages: List[ChatCompletionMessageParam] = [
+            cast(ChatCompletionMessageParam, {"role": "system", "content": system}),
+            cast(ChatCompletionMessageParam, {"role": "user", "content": user}),
+        ]
         resp = client.chat.completions.create(
             model=settings.azure_openai_deployment_name,
             temperature=0.2,
             top_p=0.1,
             max_tokens=500,
-            messages=[
-                {"role": "system", "content": system},
-                {"role": "user", "content": user},
-            ],
+            messages=messages,
         )
 
         answer = (resp.choices[0].message.content or "").strip()
