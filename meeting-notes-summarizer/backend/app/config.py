@@ -17,7 +17,10 @@ class Settings(BaseSettings):
     azure_openai_api_version: str = "2024-08-01-preview"
 
     # Embeddings configuration (Azure OpenAI)
-    azure_openai_embedding_deployment_name: str = "text-embedding-3-large"
+    azure_openai_embedding_api_key: str
+    azure_openai_embedding_endpoint: str
+    azure_openai_embedding_deployment_name: str = "text-embedding-3-small"
+    azure_openai_embedding_api_version: str
 
     # Pinecone configuration (Vector DB)
     pinecone_api_key: str
