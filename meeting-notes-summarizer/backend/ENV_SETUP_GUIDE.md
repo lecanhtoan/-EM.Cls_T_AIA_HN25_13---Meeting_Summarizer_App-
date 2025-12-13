@@ -26,7 +26,11 @@ PINECONE_INDEX_NAME=meeting-summaries
 PINECONE_NAMESPACE=default
 PINECONE_CLOUD=aws
 PINECONE_REGION=us-east-1
-AZURE_OPENAI_EMBEDDING_DEPLOYMENT_NAME=text-embedding-3-large
+
+AZURE_OPENAI_EMBEDDING_API_KEY=your-api-key-here
+AZURE_OPENAI_EMBEDDING_ENDPOINT=https://your-resource-name.openai.azure.com/
+AZURE_OPENAI_EMBEDDING_DEPLOYMENT_NAME=text-embedding-3-small
+AZURE_OPENAI_EMBEDDING_API_VERSION=2024-08-01-preview
 
 # PostgreSQL Configuration
 # Format: postgresql://username:password@host:port/database
